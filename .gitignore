@@ -1,0 +1,19 @@
+# Node.js dependencies
+node_modules/
+
+# Azure Functions local settings
+local.settings.json
+
+# Local env files
+.env
+.env.local
+.env.*.local
+
+# IDE configurations
+.vscode/
+.idea/
+
+# System and logs
+*.log
+.funcignore
+.DS_Store
