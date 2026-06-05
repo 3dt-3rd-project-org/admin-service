@@ -1,0 +1,232 @@
+{
+  "openapi": "3.0.1",
+  "info": {
+    "title": "ReadPoint Admin Service API",
+    "description": "관리자용 도서 업로드, 관리 및 실시간 분석 모니터링 토큰 API 명세",
+    "version": "1.0.0"
+  },
+  "servers": [
+    {
+      "url": "https://<your-admin-service-function-app>.azurewebsites.net/api",
+      "description": "배포된 Admin Service Azure Function App 주소"
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "관리자 권한의 JWT 토큰을 Bearer 헤더에 추가하세요."
+      }
+    }
+  },
+  "security": [
+    {
+      "bearerAuth": []
+    }
+  ],
+  "paths": {
+    "/adm/books": {
+      "get": {
+        "summary": "관리자 등록 도서 목록 조회",
+        "description": "현재 로그인한 관리자가 등록한 전체 도서 목록을 조회합니다.",
+        "responses": {
+          "200": {
+            "description": "도서 목록 조회 완료"
+          },
+          "401": {
+            "description": "인증 실패"
+          },
+          "500": {
+            "description": "서버 내부 오류"
+          }
+        }
+      },
+      "post": {
+        "summary": "ePub 도서 파일 업로드 및 분석 대기",
+        "description": "ePub 도서 파일을 업로드하고, Azure Storage에 저장한 뒤 백그라운드 분석 파이프라인을 트리거합니다.",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "bookFile": {
+                    "type": "string",
+                    "format": "binary",
+                    "description": "업로드할 ePub 형식의 도서 파일"
+                  }
+                },
+                "required": [
+                  "bookFile"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "업로드 성공 및 분석 트리거 완료"
+          },
+          "400": {
+            "description": "요청 형식 또는 파일 누락 오류"
+          },
+          "401": {
+            "description": "인증 실패"
+          },
+          "500": {
+            "description": "서버 내부 오류"
+          }
+        }
+      }
+    },
+    "/adm/books/{id}": {
+      "put": {
+        "summary": "도서 정보 수정",
+        "description": "지정한 ID의 도서 메타데이터 정보를 수정합니다.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "도서 식별자",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "title": { "type": "string" },
+                  "author": { "type": "string" },
+                  "publisher": { "type": "string" },
+                  "published_year": { "type": "integer" },
+                  "cover_url": { "type": "string" },
+                  "isbn": { "type": "string" },
+                  "epub_blob_path": { "type": "string" }
+                },
+                "required": ["title"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "도서 정보 수정 성공"
+          },
+          "400": {
+            "description": "요청 정보 오류"
+          },
+          "401": {
+            "description": "인증 실패 또는 본인 도서 아님"
+          },
+          "500": {
+            "description": "서버 내부 오류"
+          }
+        }
+      },
+      "delete": {
+        "summary": "도서 삭제",
+        "description": "지정한 ID의 도서와 관련된 스토리지 파일 및 DB 정보를 삭제합니다.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "도서 식별자",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "도서 삭제 성공"
+          },
+          "401": {
+            "description": "인증 실패 또는 본인 도서 아님"
+          },
+          "500": {
+            "description": "서버 내부 오류"
+          }
+        }
+      }
+    },
+    "/adm/books/{id}/analyze": {
+      "post": {
+        "summary": "도서 인물 관계 분석 기동",
+        "description": "특정 도서의 인물 분석 상태를 ANALYZING으로 변경하고 파이프라인 연동을 트리거합니다.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "도서 식별자",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "분석 기동 성공"
+          },
+          "401": {
+            "description": "인증 실패 또는 본인 도서 아님"
+          },
+          "500": {
+            "description": "서버 내부 오류"
+          }
+        }
+      }
+    },
+    "/adm/books/{id}/analyze/token": {
+      "get": {
+        "summary": "분석 모니터링용 Web PubSub 토큰 발급",
+        "description": "실시간 분석 진행률을 모니터링하기 위해 Web PubSub 클라이언트 엑세스 토큰 URL을 반환합니다.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "도서 식별자",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "토큰 URL 발급 성공",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": { "type": "string" },
+                    "url": { "type": "string" }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "인증 실패 또는 본인 도서 아님"
+          },
+          "503": {
+            "description": "Web PubSub 연결 실패 또는 비활성화 상태"
+          },
+          "500": {
+            "description": "서버 내부 오류"
+          }
+        }
+      }
+    }
+  }
+}
