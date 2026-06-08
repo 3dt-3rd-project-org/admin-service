@@ -252,6 +252,7 @@ app.http('analyzeBook', {
     try {
       const { user } = await verifyBookOwnership(request, bookId);
 
+      // 1. DB 상태 업데이트 (ANALYZING)
       const result = await dbPool.query(
         `UPDATE books 
          SET status = $1 
@@ -261,13 +262,34 @@ app.http('analyzeBook', {
       );
 
       const book = result.rows[0];
-      logger.info(`[ADF Trigger] Book ${bookId} 분석 파이프라인 연동 기동 (개발 예정)`);
+
+      // 2. Logic App 호출 (ADF 파이프라인 구동)
+      const logicAppUrl = process.env.AZURE_LOGIC_APP_ADF_URL;
+      if (!logicAppUrl) {
+        throw new Error('Logic App URL 환경 변수가 구성되지 않았습니다.');
+      }
+
+      logger.info(`[ADF Trigger] Book ${bookId} 분석 파이프라인 기동 요청 송신 중...`);
+      const response = await fetch(logicAppUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          books_id: bookId.toString()
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`Logic App 호출 실패: ${response.statusText}`);
+      }
+
+      logger.info(`[ADF Trigger] Book ${bookId} 분석 파이프라인 기동 요청 성공 완료.`);
 
       return handleSuccess({
-        message: '도서 분석 기동이 요청되었습니다. (ADF 파이프라인 연동 개발 예정)',
+        message: '도서 분석이 정상적으로 요청되었으며, 백그라운드 분석을 진행 중입니다.',
         book
       });
     } catch (err) {
+      logger.error(`[Admin Book Analyze] 분석 기동 중 오류 발생: ${err.message}`);
       return handleError(err, logger, 'Admin Book Analyze');
     }
   }
