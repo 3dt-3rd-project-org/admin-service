@@ -250,9 +250,21 @@ app.http('analyzeBook', {
     logger.info(`[Admin Book Analyze] 분석 기동 요청 수신 (도서 ID: ${bookId})`);
 
     try {
-      const { user } = await verifyBookOwnership(request, bookId);
+      const { user, book } = await verifyBookOwnership(request, bookId);
 
-      // 1. DB 상태 업데이트 (ANALYZING)
+      // 1. 현재 상태 검증
+      if (book.status !== 'READY' && book.status !== 'ANALYZING_ERROR') {
+        return {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            error: 'Bad Request',
+            message: `분석 파이프라인은 READY 또는 ANALYZING_ERROR 상태에서만 기동할 수 있습니다. (현재 상태: ${book.status})`
+          })
+        };
+      }
+
+      // 2. DB 상태 업데이트 (ANALYZING)
       const result = await dbPool.query(
         `UPDATE books 
          SET status = $1 
@@ -261,9 +273,9 @@ app.http('analyzeBook', {
         ['ANALYZING', bookId, user.id]
       );
 
-      const book = result.rows[0];
+      const updatedBook = result.rows[0];
 
-      // 2. Logic App 호출 (ADF 파이프라인 구동)
+      // 3. Logic App 호출 (ADF 파이프라인 구동)
       const logicAppUrl = process.env.AZURE_LOGIC_APP_ADF_URL;
       if (!logicAppUrl) {
         throw new Error('Logic App URL 환경 변수가 구성되지 않았습니다.');
@@ -286,11 +298,169 @@ app.http('analyzeBook', {
 
       return handleSuccess({
         message: '도서 분석이 정상적으로 요청되었으며, 백그라운드 분석을 진행 중입니다.',
-        book
+        book: updatedBook
       });
     } catch (err) {
       logger.error(`[Admin Book Analyze] 분석 기동 중 오류 발생: ${err.message}`);
       return handleError(err, logger, 'Admin Book Analyze');
+    }
+  }
+});
+
+app.http('summarizeBook', {
+  methods: ['POST'],
+  authLevel: 'anonymous',
+  route: 'adm/books/{id}/summary',
+  handler: async (request, context) => {
+    const bookId = request.params.id;
+    logger.info(`[Admin Book Summary] 요약 기동 요청 수신 (도서 ID: ${bookId})`);
+
+    try {
+      const { user, book } = await verifyBookOwnership(request, bookId);
+
+      // 1. 현재 상태 검증
+      if (book.status !== 'ANALYZING_COMPLETE' && book.status !== 'SUMMARY_ERROR') {
+        return {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            error: 'Bad Request',
+            message: `요약 파이프라인은 ANALYZING_COMPLETE 또는 SUMMARY_ERROR 상태에서만 기동할 수 있습니다. (현재 상태: ${book.status})`
+          })
+        };
+      }
+
+      // 2. DB 상태 업데이트 (SUMMARIZING)
+      const result = await dbPool.query(
+        `UPDATE books 
+         SET status = $1 
+         WHERE books_id = $2 AND admin_id = $3 
+         RETURNING *`,
+        ['SUMMARIZING', bookId, user.id]
+      );
+
+      const updatedBook = result.rows[0];
+
+      // 3. Logic App 호출 (ADF 파이프라인 구동)
+      const logicAppUrl = process.env.AZURE_LOGIC_APP_SUMMARY_URL;
+      if (!logicAppUrl) {
+        throw new Error('Logic App 요약 URL 환경 변수가 구성되지 않았습니다.');
+      }
+
+      logger.info(`[ADF Summary Trigger] Book ${bookId} 요약 파이프라인 기동 요청 송신 중...`);
+      const response = await fetch(logicAppUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          books_id: bookId.toString()
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`Logic App 호출 실패: ${response.statusText}`);
+      }
+
+      logger.info(`[ADF Summary Trigger] Book ${bookId} 요약 파이프라인 기동 요청 성공 완료.`);
+
+      return handleSuccess({
+        message: '도서 요약이 정상적으로 요청되었으며, 백그라운드 요약을 진행 중입니다.',
+        book: updatedBook
+      });
+    } catch (err) {
+      logger.error(`[Admin Book Summary] 요약 기동 중 오류 발생: ${err.message}`);
+      return handleError(err, logger, 'Admin Book Summary');
+    }
+  }
+});
+
+app.http('approveAnalysis', {
+  methods: ['POST'],
+  authLevel: 'anonymous',
+  route: 'adm/books/{id}/approve-analysis',
+  handler: async (request, context) => {
+    const bookId = request.params.id;
+    logger.info(`[Admin Book Approve Analysis] 분석 결과 검수 승인 요청 수신 (도서 ID: ${bookId})`);
+
+    try {
+      const { user, book } = await verifyBookOwnership(request, bookId);
+
+      // 1. 현재 상태 검증
+      if (book.status !== 'ANALYZING_FINISHED') {
+        return {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            error: 'Bad Request',
+            message: `분석 검수 승인은 ANALYZING_FINISHED 상태의 도서만 가능합니다. (현재 상태: ${book.status})`
+          })
+        };
+      }
+
+      // 2. DB 상태 업데이트 (ANALYZING_COMPLETE)
+      const result = await dbPool.query(
+        `UPDATE books 
+         SET status = $1 
+         WHERE books_id = $2 AND admin_id = $3 
+         RETURNING *`,
+        ['ANALYZING_COMPLETE', bookId, user.id]
+      );
+
+      const updatedBook = result.rows[0];
+      logger.info(`[Admin Book Approve Analysis] Book ${bookId} 분석 검수 승인 완료 -> ANALYZING_COMPLETE`);
+
+      return handleSuccess({
+        message: '도서 분석 결과가 성공적으로 승인되었습니다. 이제 요약 파이프라인을 실행할 수 있습니다.',
+        book: updatedBook
+      });
+    } catch (err) {
+      logger.error(`[Admin Book Approve Analysis] 분석 승인 중 오류 발생: ${err.message}`);
+      return handleError(err, logger, 'Admin Book Approve Analysis');
+    }
+  }
+});
+
+app.http('approveSummary', {
+  methods: ['POST'],
+  authLevel: 'anonymous',
+  route: 'adm/books/{id}/approve-summary',
+  handler: async (request, context) => {
+    const bookId = request.params.id;
+    logger.info(`[Admin Book Approve Summary] 요약 결과 검수 승인 요청 수신 (도서 ID: ${bookId})`);
+
+    try {
+      const { user, book } = await verifyBookOwnership(request, bookId);
+
+      // 1. 현재 상태 검증
+      if (book.status !== 'SUMMARIZING_COMPLETE') {
+        return {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            error: 'Bad Request',
+            message: `최종 요약 검수 승인은 SUMMARIZING_COMPLETE 상태의 도서만 가능합니다. (현재 상태: ${book.status})`
+          })
+        };
+      }
+
+      // 2. DB 상태 업데이트 (COMPLETE)
+      const result = await dbPool.query(
+        `UPDATE books 
+         SET status = $1 
+         WHERE books_id = $2 AND admin_id = $3 
+         RETURNING *`,
+        ['COMPLETE', bookId, user.id]
+      );
+
+      const updatedBook = result.rows[0];
+      logger.info(`[Admin Book Approve Summary] Book ${bookId} 요약 검수 승인 완료 -> COMPLETE`);
+
+      return handleSuccess({
+        message: '도서 최종 요약 결과가 성공적으로 승인되어 COMPLETE 상태로 배포되었습니다.',
+        book: updatedBook
+      });
+    } catch (err) {
+      logger.error(`[Admin Book Approve Summary] 요약 승인 중 오류 발생: ${err.message}`);
+      return handleError(err, logger, 'Admin Book Approve Summary');
     }
   }
 });

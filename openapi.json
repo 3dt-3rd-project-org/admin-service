@@ -103,15 +103,31 @@
               "schema": {
                 "type": "object",
                 "properties": {
-                  "title": { "type": "string" },
-                  "author": { "type": "string" },
-                  "publisher": { "type": "string" },
-                  "published_year": { "type": "integer" },
-                  "cover_url": { "type": "string" },
-                  "isbn": { "type": "string" },
-                  "epub_blob_path": { "type": "string" }
+                  "title": {
+                    "type": "string"
+                  },
+                  "author": {
+                    "type": "string"
+                  },
+                  "publisher": {
+                    "type": "string"
+                  },
+                  "published_year": {
+                    "type": "integer"
+                  },
+                  "cover_url": {
+                    "type": "string"
+                  },
+                  "isbn": {
+                    "type": "string"
+                  },
+                  "epub_blob_path": {
+                    "type": "string"
+                  }
                 },
-                "required": ["title"]
+                "required": [
+                  "title"
+                ]
               }
             }
           }
@@ -186,6 +202,96 @@
         }
       }
     },
+    "/adm/books/{id}/summary": {
+      "post": {
+        "summary": "도서 요약 파이프라인 기동",
+        "description": "특정 도서의 상태를 SUMMARIZING으로 변경하고 요약 생성 파이프라인을 트리거합니다.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "도서 식별자",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "요약 파이프라인 기동 성공"
+          },
+          "401": {
+            "description": "인증 실패 또는 본인 도서 아님"
+          },
+          "500": {
+            "description": "서버 내부 오류"
+          }
+        }
+      }
+    },
+    "/adm/books/{id}/approve-analysis": {
+      "post": {
+        "summary": "도서 분석 검수 승인",
+        "description": "분석 파이프라인 완료 도서(ANALYZING_FINISHED)의 분석 데이터를 검수한 후 승인 처리를 통해 ANALYZING_COMPLETE 상태로 전환시킵니다.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "도서 식별자",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "분석 결과 검수 승인 완료"
+          },
+          "400": {
+            "description": "부적절한 현재 도서 상태"
+          },
+          "401": {
+            "description": "인증 실패 또는 본인 도서 아님"
+          },
+          "500": {
+            "description": "서버 내부 오류"
+          }
+        }
+      }
+    },
+    "/adm/books/{id}/approve-summary": {
+      "post": {
+        "summary": "도서 최종 요약 검수 승인",
+        "description": "요약 파이프라인 완료 도서(SUMMARIZING_COMPLETE)의 요약 데이터를 검수한 후 최종 승인 처리를 통해 COMPLETE 상태로 전환하여 독자들에게 노출되도록 합니다.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "도서 식별자",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "최종 요약 결과 승인 완료"
+          },
+          "400": {
+            "description": "부적절한 현재 도서 상태"
+          },
+          "401": {
+            "description": "인증 실패 또는 본인 도서 아님"
+          },
+          "500": {
+            "description": "서버 내부 오류"
+          }
+        }
+      }
+    },
     "/adm/books/{id}/analyze/token": {
       "get": {
         "summary": "분석 모니터링용 Web PubSub 토큰 발급",
@@ -209,8 +315,12 @@
                 "schema": {
                   "type": "object",
                   "properties": {
-                    "message": { "type": "string" },
-                    "url": { "type": "string" }
+                    "message": {
+                      "type": "string"
+                    },
+                    "url": {
+                      "type": "string"
+                    }
                   }
                 }
               }
