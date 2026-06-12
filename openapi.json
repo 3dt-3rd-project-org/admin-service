@@ -292,21 +292,10 @@
         }
       }
     },
-    "/adm/books/{id}/analyze/token": {
+    "/adm/analyze/token": {
       "get": {
         "summary": "분석 모니터링용 Web PubSub 토큰 발급",
         "description": "실시간 분석 진행률을 모니터링하기 위해 Web PubSub 클라이언트 엑세스 토큰 URL을 반환합니다.",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "required": true,
-            "description": "도서 식별자",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
         "responses": {
           "200": {
             "description": "토큰 URL 발급 성공",

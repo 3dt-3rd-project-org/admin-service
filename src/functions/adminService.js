@@ -379,7 +379,7 @@ app.http('approveAnalysis', {
   route: 'adm/books/{id}/approve-analysis',
   handler: async (request, context) => {
     const bookId = request.params.id;
-    logger.info(`[Admin Book Approve Analysis] 분석 결과 검수 승인 요청 수신 (도서 ID: ${bookId})`);
+    logger.info(`[Admin Book Approve Analysis] 분석 결과 수정 및 승인 요청 수신 (도서 ID: ${bookId})`);
 
     try {
       const { user, book } = await verifyBookOwnership(request, bookId);
@@ -396,24 +396,137 @@ app.http('approveAnalysis', {
         };
       }
 
-      // 2. DB 상태 업데이트 (ANALYZING_COMPLETE)
-      const result = await dbPool.query(
-        `UPDATE books 
-         SET status = $1 
-         WHERE books_id = $2 AND admin_id = $3 
-         RETURNING *`,
-        ['ANALYZING_COMPLETE', bookId, user.id]
-      );
+      const reqBody = await request.json();
+      const { characters, relations, events } = reqBody;
+      const charList = characters || [];
+      const relList = relations || [];
+      const eventList = events || [];
 
-      const updatedBook = result.rows[0];
-      logger.info(`[Admin Book Approve Analysis] Book ${bookId} 분석 검수 승인 완료 -> ANALYZING_COMPLETE`);
+      logger.info(`[Admin Book Approve Analysis] 일괄 반영 데이터 건수 - 인물: ${charList.length}건, 관계: ${relList.length}건, 사건: ${eventList.length}건`);
 
-      return handleSuccess({
-        message: '도서 분석 결과가 성공적으로 승인되었습니다. 이제 요약 파이프라인을 실행할 수 있습니다.',
-        book: updatedBook
-      });
+      // 단일 클라이언트를 획득하여 트랜잭션 수행
+      const client = await dbPool.connect();
+      try {
+        await client.query('BEGIN');
+
+        // 1) 인물 일괄 수정
+        for (const char of charList) {
+          if (!char.character_id) {
+            throw new Error(`인물 수정 실패: character_id가 누락되었습니다.`);
+          }
+          await client.query(
+            'CALL readpoint.sp_upsert_character($1, $2, $3, $4, $5)',
+            [char.character_id, bookId, char.character_name, char.role, char.description]
+          );
+        }
+
+        // 2) 관계 일괄 수정 (지정된 열만 수정 허용)
+        for (const rel of relList) {
+          if (!rel.relationship_change_id) {
+            throw new Error(`관계 수정 실패: relationship_change_id가 누락되었습니다.`);
+          }
+          const existRes = await client.query(
+            'SELECT * FROM readpoint.relationship_change WHERE relationship_change_id = $1 AND books_id = $2',
+            [rel.relationship_change_id, bookId]
+          );
+          if (existRes.rows.length === 0) {
+            throw new Error(`관계 수정 실패: 존재하지 않는 관계 ID입니다. (relationship_change_id: ${rel.relationship_change_id})`);
+          }
+          const existing = existRes.rows[0];
+
+          const relation = rel.relation !== undefined ? rel.relation : existing.relation;
+          const change_summary = rel.change_summary !== undefined ? rel.change_summary : existing.change_summary;
+          const importance_score = rel.importance_score !== undefined ? parseFloat(rel.importance_score) : (existing.importance_score !== null ? parseFloat(existing.importance_score) : null);
+          const is_core_relation = rel.is_core_relation !== undefined ? !!rel.is_core_relation : existing.is_core_relation;
+
+          await client.query(
+            `SELECT readpoint.sp_upsert_relation($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+            [
+              rel.relationship_change_id,
+              bookId,
+              existing.chapter_id,
+              existing.related_event_id,
+              existing.source_character_id,
+              existing.target_character_id,
+              relation,
+              change_summary,
+              existing.evidence,
+              existing.start_paragraph_order,
+              existing.end_paragraph_order,
+              existing.relation_category,
+              importance_score,
+              is_core_relation
+            ]
+          );
+        }
+
+        // 3) 사건 일괄 수정 (지정된 열만 수정 허용)
+        for (const ev of eventList) {
+          if (!ev.event_id) {
+            throw new Error(`사건 수정 실패: event_id가 누락되었습니다.`);
+          }
+          const existRes = await client.query(
+            'SELECT * FROM readpoint.event WHERE event_id = $1 AND books_id = $2',
+            [ev.event_id, bookId]
+          );
+          if (existRes.rows.length === 0) {
+            throw new Error(`사건 수정 실패: 존재하지 않는 사건 ID입니다. (event_id: ${ev.event_id})`);
+          }
+          const existing = existRes.rows[0];
+
+          const short_title = ev.short_title !== undefined ? ev.short_title : existing.short_title;
+          const summary = ev.summary !== undefined ? ev.summary : existing.summary;
+          const event_type = ev.event_type !== undefined ? ev.event_type : existing.event_type;
+          const importance_score = ev.importance_score !== undefined ? parseFloat(ev.importance_score) : (existing.importance_score !== null ? parseFloat(existing.importance_score) : null);
+          const is_core_event = ev.is_core_event !== undefined ? !!ev.is_core_event : existing.is_core_event;
+
+          await client.query(
+            `SELECT readpoint.sp_upsert_event($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+            [
+              ev.event_id,
+              bookId,
+              existing.chapter_id,
+              existing.event_order,
+              summary,
+              existing.evidence,
+              existing.start_paragraph_id,
+              existing.end_paragraph_id,
+              short_title,
+              event_type,
+              importance_score,
+              is_core_event,
+              existing.is_sensitive
+            ]
+          );
+        }
+
+        // 4) DB 상태 업데이트 (ANALYZING_COMPLETE)
+        const updateResult = await client.query(
+          `UPDATE books 
+           SET status = $1,
+               updated_at = CURRENT_TIMESTAMP
+           WHERE books_id = $2 AND admin_id = $3 
+           RETURNING *`,
+          ['ANALYZING_COMPLETE', bookId, user.id]
+        );
+
+        const updatedBook = updateResult.rows[0];
+
+        await client.query('COMMIT');
+        logger.info(`[Admin Book Approve Analysis] Book ${bookId} 일괄 수정 및 분석 승인 완료 -> ANALYZING_COMPLETE`);
+
+        return handleSuccess({
+          message: '도서 데이터 수정 및 분석 결과가 성공적으로 승인되었습니다. 이제 요약 파이프라인을 실행할 수 있습니다.',
+          book: updatedBook
+        });
+      } catch (txErr) {
+        await client.query('ROLLBACK');
+        throw txErr;
+      } finally {
+        client.release();
+      }
     } catch (err) {
-      logger.error(`[Admin Book Approve Analysis] 분석 승인 중 오류 발생: ${err.message}`);
+      logger.error(`[Admin Book Approve Analysis] 일괄 수정 및 분석 승인 중 오류 발생: ${err.message}`);
       return handleError(err, logger, 'Admin Book Approve Analysis');
     }
   }
@@ -496,6 +609,84 @@ app.http('getWebPubSubToken', {
       });
     } catch (err) {
       return handleError(err, logger, 'Web PubSub Token Trigger');
+    }
+  }
+});
+
+app.http('getCharacters', {
+  methods: ['GET'],
+  authLevel: 'anonymous',
+  route: 'adm/books/{id}/characters',
+  handler: async (request, context) => {
+    const bookId = request.params.id;
+    logger.info(`[Admin Get Characters] 책 인물 목록 조회 요청 수신 (도서 ID: ${bookId})`);
+    try {
+      await verifyBookOwnership(request, bookId);
+
+      const result = await dbPool.query(
+        'SELECT * FROM readpoint.sp_get_characters($1)',
+        [bookId]
+      );
+
+      logger.info(`[Admin Get Characters] 책 ${bookId} 인물 목록 조회 완료 (조회 수: ${result.rows.length}개)`);
+      return handleSuccess({
+        message: '인물 목록을 조회했습니다.',
+        characters: result.rows
+      });
+    } catch (err) {
+      return handleError(err, logger, 'Admin Get Characters');
+    }
+  }
+});
+
+app.http('getRelations', {
+  methods: ['GET'],
+  authLevel: 'anonymous',
+  route: 'adm/books/{id}/relations',
+  handler: async (request, context) => {
+    const bookId = request.params.id;
+    logger.info(`[Admin Get Relations] 책 인물 관계 목록 조회 요청 수신 (도서 ID: ${bookId})`);
+    try {
+      await verifyBookOwnership(request, bookId);
+
+      const result = await dbPool.query(
+        'SELECT * FROM readpoint.sp_get_relations($1)',
+        [bookId]
+      );
+
+      logger.info(`[Admin Get Relations] 책 ${bookId} 인물 관계 목록 조회 완료 (조회 수: ${result.rows.length}개)`);
+      return handleSuccess({
+        message: '인물 관계 목록을 조회했습니다.',
+        relations: result.rows
+      });
+    } catch (err) {
+      return handleError(err, logger, 'Admin Get Relations');
+    }
+  }
+});
+
+app.http('getEvents', {
+  methods: ['GET'],
+  authLevel: 'anonymous',
+  route: 'adm/books/{id}/events',
+  handler: async (request, context) => {
+    const bookId = request.params.id;
+    logger.info(`[Admin Get Events] 책 사건 목록 조회 요청 수신 (도서 ID: ${bookId})`);
+    try {
+      await verifyBookOwnership(request, bookId);
+
+      const result = await dbPool.query(
+        'SELECT * FROM readpoint.sp_get_events($1)',
+        [bookId]
+      );
+
+      logger.info(`[Admin Get Events] 책 ${bookId} 사건 목록 조회 완료 (조회 수: ${result.rows.length}개)`);
+      return handleSuccess({
+        message: '사건 목록을 조회했습니다.',
+        events: result.rows
+      });
+    } catch (err) {
+      return handleError(err, logger, 'Admin Get Events');
     }
   }
 });
