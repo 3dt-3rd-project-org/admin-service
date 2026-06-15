@@ -555,16 +555,73 @@ app.http('approveSummary', {
         };
       }
 
-      // 2. DB 상태 업데이트 (COMPLETE)
-      const result = await dbPool.query(
-        `UPDATE books 
-         SET status = $1 
-         WHERE books_id = $2 AND admin_id = $3 
-         RETURNING *`,
-        ['COMPLETE', bookId, user.id]
-      );
+      let reqBody = {};
+      try {
+        reqBody = await request.json();
+      } catch (jsonErr) {
+        logger.info('[Admin Book Approve Summary] 요청 본문(body)이 비어있거나 JSON 형식이 아닙니다. 단순 승인 처리를 진행합니다.');
+      }
 
-      const updatedBook = result.rows[0];
+      const { summaries } = reqBody;
+      let updatedBook;
+
+      if (summaries && Array.isArray(summaries) && summaries.length > 0) {
+        logger.info(`[Admin Book Approve Summary] 요약 수정 건수: ${summaries.length}건. 일괄 적재 및 승인 처리를 진행합니다.`);
+
+        const client = await dbPool.connect();
+        try {
+          await client.query('BEGIN');
+
+          for (const item of summaries) {
+            if (item.progress_summary_id === undefined || item.progress_summary_id === null) {
+              throw new Error('요약 수정 실패: progress_summary_id가 누락되었습니다.');
+            }
+            if (item.summary_3line === undefined || item.summary_3line === null) {
+              throw new Error('요약 수정 실패: summary_3line 내용이 누락되었습니다.');
+            }
+
+            const updateRes = await client.query(
+              `UPDATE readpoint.progress_summary
+               SET summary_3line = $1, updated_at = CURRENT_TIMESTAMP
+               WHERE progress_summary_id = $2 AND books_id = $3
+               RETURNING *`,
+              [item.summary_3line, item.progress_summary_id, bookId]
+            );
+
+            if (updateRes.rows.length === 0) {
+              throw new Error(`요약 수정 실패: 존재하지 않는 요약 ID이거나 해당 도서의 요약이 아닙니다. (ID: ${item.progress_summary_id})`);
+            }
+          }
+
+          // DB 상태 업데이트 (COMPLETE)
+          const result = await client.query(
+            `UPDATE books 
+             SET status = $1, updated_at = CURRENT_TIMESTAMP
+             WHERE books_id = $2 AND admin_id = $3 
+             RETURNING *`,
+            ['COMPLETE', bookId, user.id]
+          );
+
+          updatedBook = result.rows[0];
+          await client.query('COMMIT');
+        } catch (txErr) {
+          await client.query('ROLLBACK');
+          throw txErr;
+        } finally {
+          client.release();
+        }
+      } else {
+        logger.info('[Admin Book Approve Summary] 수정 요청된 요약이 없으므로 상태만 COMPLETE로 즉시 변경합니다.');
+        const result = await dbPool.query(
+          `UPDATE books 
+           SET status = $1, updated_at = CURRENT_TIMESTAMP
+           WHERE books_id = $2 AND admin_id = $3 
+           RETURNING *`,
+          ['COMPLETE', bookId, user.id]
+        );
+        updatedBook = result.rows[0];
+      }
+
       logger.info(`[Admin Book Approve Summary] Book ${bookId} 요약 검수 승인 완료 -> COMPLETE`);
 
       return handleSuccess({
@@ -690,3 +747,45 @@ app.http('getEvents', {
     }
   }
 });
+
+app.http('getSummaries', {
+  methods: ['GET'],
+  authLevel: 'anonymous',
+  route: 'adm/books/{id}/summaries',
+  handler: async (request, context) => {
+    const bookId = request.params.id;
+    logger.info(`[Admin Get Summaries] 책 요약 목록 조회 요청 수신 (도서 ID: ${bookId})`);
+    try {
+      await verifyBookOwnership(request, bookId);
+
+      const queryStr = `
+        SELECT 
+            ps.progress_summary_id,
+            ps.summary_3line,
+            c.chapter_order,
+            p.paragraph_order
+        FROM readpoint.progress_summary ps
+        JOIN readpoint.chapter c ON ps.chapter_id = c.chapter_id
+        JOIN readpoint.paragraph p ON ps.end_paragraph_id = p.paragraph_id
+        WHERE ps.books_id = $1
+        ORDER BY c.chapter_order ASC, p.paragraph_order ASC;
+      `;
+
+      const result = await dbPool.query(queryStr, [bookId]);
+
+      logger.info(`[Admin Get Summaries] 책 ${bookId} 요약 목록 조회 완료 (조회 수: ${result.rows.length}개)`);
+      return handleSuccess({
+        message: '요약 목록을 조회했습니다.',
+        summaries: result.rows.map(row => ({
+          progress_summary_id: parseInt(row.progress_summary_id, 10),
+          summary_3line: row.summary_3line,
+          chapter_order: row.chapter_order,
+          paragraph_order: row.paragraph_order
+        }))
+      });
+    } catch (err) {
+      return handleError(err, logger, 'Admin Get Summaries');
+    }
+  }
+});
+
