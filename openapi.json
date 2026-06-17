@@ -115,13 +115,7 @@
                   "published_year": {
                     "type": "integer"
                   },
-                  "cover_url": {
-                    "type": "string"
-                  },
                   "isbn": {
-                    "type": "string"
-                  },
-                  "epub_blob_path": {
                     "type": "string"
                   }
                 },

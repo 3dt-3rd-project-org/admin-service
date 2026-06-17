@@ -117,10 +117,22 @@ app.http('updateBook', {
     logger.info(`[Admin Book Update] 도서 정보 수정 요청 수신 (도서 ID: ${bookId})`);
 
     try {
-      const { user } = await verifyBookOwnership(request, bookId);
+      const { user, book } = await verifyBookOwnership(request, bookId);
+
+      // 도서 상태 검증
+      if (book.status !== 'READY') {
+        return {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            error: 'Bad Request',
+            message: `도서 정보는 READY 상태에서만 수정할 수 있습니다. (현재 상태: ${book.status})`
+          })
+        };
+      }
 
       const reqBody = await request.json();
-      const { title, author, publisher, published_year, cover_url, isbn, epub_blob_path } = reqBody;
+      const { title, author, publisher, published_year, isbn } = reqBody;
 
       if (!title) {
         return {
@@ -136,20 +148,16 @@ app.http('updateBook', {
              author = $2, 
              publisher = $3, 
              published_year = $4, 
-             cover_url = $5, 
-             isbn = $6, 
-             epub_blob_path = $7,
+             isbn = $5, 
              updated_at = CURRENT_TIMESTAMP
-         WHERE books_id = $8 AND admin_id = $9 
+         WHERE books_id = $6 AND admin_id = $7 
          RETURNING *`,
         [
           title,
           author || null,
           publisher || null,
           published_year || null,
-          cover_url || null,
           isbn || null,
-          epub_blob_path || null,
           bookId,
           user.id
         ]
